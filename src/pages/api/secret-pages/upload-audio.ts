@@ -65,13 +65,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(502).json({ error: upErr.message });
   }
 
-  const { data: existing } = await admin
+  const { data: existing, error: existingErr } = await admin
     .from('secret_pages')
     .select('content, album_cover_url')
     .eq('user_id', userId)
     .eq('year', year)
     .eq('month', month)
     .maybeSingle();
+
+  if (existingErr) {
+    return res.status(502).json({ error: existingErr.message });
+  }
 
   const safeName =
     typeof audio_filename === 'string' && audio_filename.trim()
@@ -83,8 +87,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       user_id: userId,
       year,
       month,
-      content: existing?.content ?? '',
-      album_cover_url: existing?.album_cover_url ?? null,
+      content: existing ? existing.content : '',
+      album_cover_url: existing ? existing.album_cover_url : null,
       audio_storage_path: path,
       audio_original_filename: safeName,
       audio_start_seconds: 0,

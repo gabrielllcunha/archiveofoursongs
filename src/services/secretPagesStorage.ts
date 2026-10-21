@@ -5,6 +5,7 @@ import {
   decryptSecretPageContentDetailed,
   encryptSecretPageContent,
 } from '@/utils/secretPageCrypto';
+import { ensureSecretPagesKeyMaterial } from '@/utils/ensureSecretPagesKeyMaterial';
 import { isStoredFileAudioPath } from '@/utils/soundtrackSource';
 
 export type SecretPageRecord = {
@@ -23,6 +24,14 @@ type CloudFetchResult = {
   decryptFailed: boolean;
   needsReencryptWithSyncKey: boolean;
 };
+
+type StoreSecretPageOptions = {
+  allowReplaceUnreadContent?: boolean;
+};
+
+function storedContentIsNonEmpty(value: string | null | undefined): boolean {
+  return Boolean(value && value.trim());
+}
 
 const emptyRecord = (): SecretPageRecord => ({
   content: '',
@@ -79,6 +88,7 @@ async function fetchSupabaseSecretPage(
     };
   }
   const userId = await requireSessionUserId();
+  await ensureSecretPagesKeyMaterial();
   const { data, error } = await supabase
     .from('secret_pages')
     .select(
@@ -124,16 +134,32 @@ async function upsertSupabaseSecretPage(
   year: number,
   month: string,
   record: SecretPageRecord,
-  options?: { preserveEncryptedContent?: string | null }
+  options?: { preserveEncryptedContent?: string | null; refuseContentWrite?: boolean }
 ) {
   if (!supabase) throw new Error('Supabase is not configured');
   const userId = await requireSessionUserId();
 
+  const { data: existing, error: existingError } = await supabase
+    .from('secret_pages')
+    .select('content')
+    .eq('user_id', userId)
+    .eq('year', year)
+    .eq('month', month)
+    .maybeSingle();
+  if (existingError) throw existingError;
+
+  const existingContent = existing?.content ?? '';
   let contentForStorage: string;
   if (options?.preserveEncryptedContent) {
     contentForStorage = options.preserveEncryptedContent;
+  } else if (options?.refuseContentWrite && storedContentIsNonEmpty(existingContent)) {
+    contentForStorage = existingContent;
   } else {
     contentForStorage = await encryptSecretPageContent(userId, record.content);
+  }
+
+  if (!storedContentIsNonEmpty(contentForStorage) && storedContentIsNonEmpty(existingContent)) {
+    contentForStorage = existingContent;
   }
 
   const { error } = await supabase.from('secret_pages').upsert(
@@ -183,12 +209,17 @@ export const secretPagesStorage = {
       if (!supabase) return emptyRecord();
       try {
         const fetched = await fetchSupabaseSecretPage(year, month);
-        if (fetched.record && fetched.needsReencryptWithSyncKey && !fetched.decryptFailed) {
+        if (
+          fetched.record &&
+          fetched.needsReencryptWithSyncKey &&
+          !fetched.decryptFailed &&
+          storedContentIsNonEmpty(fetched.record.content)
+        ) {
           void upsertSupabaseSecretPage(year, month, fetched.record).catch(() => undefined);
         }
         return fetched.record ?? emptyRecord();
       } catch {
-        return emptyRecord();
+        return { ...emptyRecord(), decryptFailed: true };
       }
     }
 
@@ -196,7 +227,11 @@ export const secretPagesStorage = {
       try {
         const fetched = await fetchSupabaseSecretPage(year, month);
         if (fetched.record !== null) {
-          if (fetched.needsReencryptWithSyncKey && !fetched.decryptFailed) {
+          if (
+            fetched.needsReencryptWithSyncKey &&
+            !fetched.decryptFailed &&
+            storedContentIsNonEmpty(fetched.record.content)
+          ) {
             void upsertSupabaseSecretPage(year, month, fetched.record).catch(() => undefined);
           }
           if (!fetched.decryptFailed && isBrowserIndexedDbAvailable()) {
@@ -209,6 +244,7 @@ export const secretPagesStorage = {
         return emptyRecord();
       } catch {
         const local = await idbSecretPages.getSecretPageRecord(lastfmUsername, year, month);
+        const localEmpty = !storedContentIsNonEmpty(local.content);
         return {
           content: local.content,
           audio_storage_path: local.audio_storage_path,
@@ -216,7 +252,7 @@ export const secretPagesStorage = {
           audio_original_filename: local.audio_original_filename,
           audio_start_seconds: local.audio_start_seconds,
           audio_blob: local.audio_blob ?? null,
-          decryptFailed: false,
+          decryptFailed: localEmpty,
         };
       }
     }
@@ -237,11 +273,14 @@ export const secretPagesStorage = {
     lastfmUsername: string,
     year: number,
     month: string,
-    patch: Partial<SecretPageRecord>
+    patch: Partial<SecretPageRecord>,
+    options?: StoreSecretPageOptions
   ): Promise<void> {
     let base = emptyRecord();
     let preserveEncryptedContent: string | null = null;
     let decryptFailed = false;
+    let cloudUnreachable = false;
+    let existingRawContent: string | null = null;
 
     if (supabase) {
       try {
@@ -249,15 +288,19 @@ export const secretPagesStorage = {
         if (fetched.record) {
           base = { ...fetched.record };
           decryptFailed = fetched.decryptFailed;
-          if (
-            fetched.decryptFailed &&
-            fetched.rawEncryptedContent &&
-            (patch.content === undefined || patch.content === '')
-          ) {
+          existingRawContent = fetched.rawEncryptedContent;
+          const incomingContent = patch.content;
+          const incomingEmpty = incomingContent === undefined || !incomingContent.trim();
+          const refuseUnreadReplace = decryptFailed && !options?.allowReplaceUnreadContent;
+          if (fetched.rawEncryptedContent && (incomingEmpty || refuseUnreadReplace)) {
+            preserveEncryptedContent = fetched.rawEncryptedContent;
+          }
+          if (incomingEmpty && storedContentIsNonEmpty(fetched.rawEncryptedContent)) {
             preserveEncryptedContent = fetched.rawEncryptedContent;
           }
         }
       } catch {
+        cloudUnreachable = true;
         const local = await idbSecretPages.getSecretPageRecord(lastfmUsername, year, month);
         base = {
           content: local.content,
@@ -282,10 +325,12 @@ export const secretPagesStorage = {
       };
     }
 
-    if (decryptFailed && patch.content !== undefined && patch.content === '') {
+    const incomingEmpty = patch.content === undefined || !patch.content.trim();
+    const refuseUnreadReplace = decryptFailed && !options?.allowReplaceUnreadContent;
+    if ((decryptFailed && incomingEmpty) || refuseUnreadReplace || (incomingEmpty && storedContentIsNonEmpty(existingRawContent))) {
       const { content: _ignored, decryptFailed: _df, ...safePatch } = patch;
       patch = safePatch;
-      if (Object.keys(patch).length === 0 && preserveEncryptedContent) {
+      if (Object.keys(patch).length === 0 && (preserveEncryptedContent || incomingEmpty)) {
         return;
       }
     }
@@ -303,14 +348,26 @@ export const secretPagesStorage = {
       decryptFailed: false,
     };
 
-    if (decryptFailed && patch.content !== undefined && patch.content.length > 0) {
+    if (decryptFailed && options?.allowReplaceUnreadContent && storedContentIsNonEmpty(patch.content)) {
       preserveEncryptedContent = null;
     }
+
+    if (cloudUnreachable) {
+      if (isBrowserIndexedDbAvailable()) {
+        await idbSecretPages.storeSecretPageRecord(lastfmUsername, year, month, toIdbPayload(next));
+      }
+      return;
+    }
+
+    const upsertOptions = {
+      preserveEncryptedContent,
+      refuseContentWrite: Boolean(preserveEncryptedContent) || refuseUnreadReplace,
+    };
 
     if (!isBrowserIndexedDbAvailable()) {
       if (!supabase) return;
       try {
-        await upsertSupabaseSecretPage(year, month, next, { preserveEncryptedContent });
+        await upsertSupabaseSecretPage(year, month, next, upsertOptions);
       } catch {
       }
       return;
@@ -318,7 +375,7 @@ export const secretPagesStorage = {
 
     if (supabase) {
       try {
-        await upsertSupabaseSecretPage(year, month, next, { preserveEncryptedContent });
+        await upsertSupabaseSecretPage(year, month, next, upsertOptions);
         if (!preserveEncryptedContent) {
           await idbSecretPages.storeSecretPageRecord(
             lastfmUsername,

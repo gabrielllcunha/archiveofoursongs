@@ -52,6 +52,15 @@ function isMobileSwipeDevice() {
   return window.matchMedia(MOBILE_SWIPE_MQ).matches;
 }
 
+function pageKeyYearMonth(pageKey: string): { year: number; month: string } | null {
+  const sep = pageKey.indexOf(":");
+  if (sep <= 0) return null;
+  const year = Number(pageKey.slice(0, sep));
+  const month = pageKey.slice(sep + 1);
+  if (!Number.isFinite(year) || !month) return null;
+  return { year, month };
+}
+
 function isMonthSwipeIgnoredTarget(target: EventTarget | null) {
   if (!(target instanceof Element)) return false;
   return Boolean(target.closest("button, input, textarea, select, a"));
@@ -410,6 +419,11 @@ export function ModalExtraContent({
   const keyboardFocusAnchorRef = useRef<HTMLDivElement | null>(null);
   const viewRevisionRef = useRef(0);
   const decryptFailedRef = useRef(false);
+  const contentLoadedKeyRef = useRef<string | null>(null);
+  const loadedRevisionRef = useRef<number | null>(null);
+  const loadedHadContentRef = useRef(false);
+  const lastSavedContentRef = useRef("");
+  const contentRef = useRef("");
   const modalYearRef = useRef(modalYear);
   modalYearRef.current = modalYear;
 
@@ -418,6 +432,7 @@ export function ModalExtraContent({
   const selectedAlbum = albumEntries.find((item) => item.month === selectedMonth);
   const backgroundImageUrl = savedAlbumCoverUrl ?? selectedAlbum?.imageUrl ?? null;
 
+  contentRef.current = content;
   const displayAudioName = (audioUi.filename?.trim() || "Soundtrack").replace(/\s—\s/g, " - ");
 
   const stopAudioPlayback = useCallback(() => {
@@ -502,12 +517,24 @@ export function ModalExtraContent({
     if (debounceRef.current) {
       window.clearTimeout(debounceRef.current);
       debounceRef.current = null;
+      const prevKey = contentLoadedKeyRef.current;
+      const pending = contentRef.current;
+      const parsed = prevKey ? pageKeyYearMonth(prevKey) : null;
+      const username = localStorage.getItem("lastfm_username");
+      if (parsed && username && pending.trim() && !decryptFailedRef.current) {
+        void secretPagesStorage.storeSecretPage(username, parsed.year, parsed.month, { content: pending });
+      }
     }
     if (startTimeDebounceRef.current) {
       window.clearTimeout(startTimeDebounceRef.current);
       startTimeDebounceRef.current = null;
     }
     decryptFailedRef.current = false;
+    contentLoadedKeyRef.current = null;
+    loadedRevisionRef.current = null;
+    loadedHadContentRef.current = false;
+    lastSavedContentRef.current = "";
+    setEditing(false);
     setSavedAlbumCoverUrl(null);
     setContent("");
     setLoadingContent(true);
@@ -558,13 +585,18 @@ export function ModalExtraContent({
     (async () => {
       const rec = await secretPagesStorage.getSecretPage(username, modalYear, selectedMonth);
       if (cancelled || revision !== viewRevisionRef.current) return;
+      const pageKey = `${modalYear}:${selectedMonth}`;
       decryptFailedRef.current = Boolean(rec.decryptFailed);
+      contentLoadedKeyRef.current = pageKey;
+      loadedRevisionRef.current = revision;
+      loadedHadContentRef.current = Boolean(rec.content.trim()) || Boolean(rec.decryptFailed);
+      lastSavedContentRef.current = rec.content;
       setContent(rec.content);
       setSavedAlbumCoverUrl(rec.album_cover_url);
       if (rec.decryptFailed) {
         showToast({
           title: 'Could not load this note',
-          description: 'Try the device where you last wrote it, or write a new note to replace it.',
+          description: 'You can write a new note. Blank text will not overwrite what is already saved.',
           variant: 'warning',
           duration: 12000,
         });
@@ -675,16 +707,29 @@ export function ModalExtraContent({
   const saveContent = async (value: string) => {
     const username = localStorage.getItem("lastfm_username");
     if (!username) return;
-    if (decryptFailedRef.current && !value.trim()) {
+    const pageKey = `${modalYear}:${selectedMonth}`;
+    if (contentLoadedKeyRef.current !== pageKey) return;
+    if (loadedRevisionRef.current !== viewRevisionRef.current) return;
+    if (decryptFailedRef.current && !value.trim()) return;
+    if (!value.trim() && loadedHadContentRef.current) {
+      setContent(lastSavedContentRef.current);
       return;
     }
     const cover = selectedAlbum?.imageUrl ?? null;
-    await secretPagesStorage.storeSecretPage(username, modalYear, selectedMonth, {
-      content: value,
-      album_cover_url: cover,
-    });
+    await secretPagesStorage.storeSecretPage(
+      username,
+      modalYear,
+      selectedMonth,
+      { content: value, album_cover_url: cover },
+      { allowReplaceUnreadContent: Boolean(value.trim()) && decryptFailedRef.current }
+    );
     if (decryptFailedRef.current && value.trim()) {
       decryptFailedRef.current = false;
+      loadedHadContentRef.current = true;
+    }
+    if (value.trim()) {
+      loadedHadContentRef.current = true;
+      lastSavedContentRef.current = value;
     }
     setSavedAlbumCoverUrl(cover);
   };

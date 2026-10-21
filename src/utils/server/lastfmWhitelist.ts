@@ -19,7 +19,7 @@ export function isLastfmUsernameOnWhitelist(username: string): boolean {
   return allowed.has(username.trim().toLowerCase());
 }
 
-export function parseAllowedCurrentYearLastfmUsernames(): Set<string> {
+export function parseSystemManagerAccounts(): Set<string> {
   const raw = process.env.SYSTEM_MANAGER_ACCOUNT;
   if (!raw?.trim()) {
     return new Set();
@@ -32,10 +32,18 @@ export function parseAllowedCurrentYearLastfmUsernames(): Set<string> {
   );
 }
 
-export function isLastfmUsernameAllowedCurrentYear(username: string): boolean {
-  const allowed = parseAllowedCurrentYearLastfmUsernames();
+export function parseAllowedCurrentYearLastfmUsernames(): Set<string> {
+  return parseSystemManagerAccounts();
+}
+
+export function isSystemManagerAccount(username: string): boolean {
+  const allowed = parseSystemManagerAccounts();
   if (allowed.size === 0) {
     return false;
   }
   return allowed.has(username.trim().toLowerCase());
+}
+
+export function isLastfmUsernameAllowedCurrentYear(username: string): boolean {
+  return isSystemManagerAccount(username);
 }
