@@ -20,7 +20,7 @@ export function isLastfmUsernameOnWhitelist(username: string): boolean {
 }
 
 export function parseAllowedCurrentYearLastfmUsernames(): Set<string> {
-  const raw = process.env.ALLOWED_CURRENT_YEAR_LASTFM_USERNAMES;
+  const raw = process.env.SYSTEM_MANAGER_ACCOUNT;
   if (!raw?.trim()) {
     return new Set();
   }

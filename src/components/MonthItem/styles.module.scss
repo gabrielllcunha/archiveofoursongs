@@ -93,6 +93,18 @@
   height: 24px;
 }
 
+.itemMeta {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: calc(6px + 2 * 0.75rem * 1.2 + 2 * 0.7rem * 1.2 + 0.75rem * 1.2);
+}
+
+.itemMetaArtist {
+  min-height: calc(16px + 2 * 0.75rem * 1.2 + 0.75rem * 1.2);
+}
+
 .itemName {
   font-size: 0.75rem;
   font-weight: 600;

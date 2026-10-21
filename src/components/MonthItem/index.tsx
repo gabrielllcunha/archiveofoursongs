@@ -50,18 +50,20 @@ export function MonthItem({ month, imageUrl, name, artist, scrobbles, rounded, o
           </div>
         )}
       </div>
-      {rounded ? (
-        <>
-          {name && <span className={styles.itemName} title={name}>{name}</span>}
-          {scrobbles && <span className={styles.scrobblesQty}><b>{scrobbles}</b> scrobbles</span>}
-        </>
-      ) : (
-        <>
-          {name && <span className={styles.itemName} title={`❝${name}❞`}>❝{name}❞</span>}
-          {artist && <span className={styles.artistName} title={`by ${artist}`}>by {artist}</span>}
-          {scrobbles && <span className={styles.scrobblesQty}><b>{scrobbles}</b> scrobbles</span>}
-        </>
-      )}
+      <div className={classNames(styles.itemMeta, rounded && styles.itemMetaArtist)}>
+        {rounded ? (
+          <>
+            {name && <span className={styles.itemName} title={name}>{name}</span>}
+            {scrobbles && <span className={styles.scrobblesQty}><b>{scrobbles}</b> scrobbles</span>}
+          </>
+        ) : (
+          <>
+            {name && <span className={styles.itemName} title={`❝${name}❞`}>❝{name}❞</span>}
+            {artist && <span className={styles.artistName} title={`by ${artist}`}>by {artist}</span>}
+            {scrobbles && <span className={styles.scrobblesQty}><b>{scrobbles}</b> scrobbles</span>}
+          </>
+        )}
+      </div>
     </div>
   );
 }
