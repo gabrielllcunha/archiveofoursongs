@@ -1068,7 +1068,7 @@ export function ModalExtraContent({
             </div>
             <div className={styles.mediaRow}>
               {audioUi.hasTrack ? (
-                <div className={audioUi.source === "file" ? styles.soundtrackStack : undefined}>
+                <div className={styles.soundtrackPlayer}>
                   <div
                     className={`${styles.soundtrackIsland}${soundtrackPlaying ? ` ${styles.soundtrackIslandLive}` : ""}${islandAccent ? "" : ` ${styles.soundtrackIslandPending}`}`}
                     style={{ "--island-accent": islandAccent ?? "255, 255, 255" } as CSSProperties}
@@ -1104,23 +1104,25 @@ export function ModalExtraContent({
                     </button>
                   </div>
                   {audioUi.source === "file" && (
-                    <div className={styles.startTimeRow}>
-                      <label className={styles.startTimeLabel} htmlFor="secret-audio-start">
-                        First play starts at
-                      </label>
-                      <input
-                        id="secret-audio-start"
-                        type="text"
-                        className={styles.startTimeInput}
-                        value={startTimeDraft}
-                        onChange={(e) => handleStartTimeChange(e.target.value)}
-                        onBlur={() => flushStartTime()}
-                        placeholder="m:ss"
-                        inputMode="numeric"
-                        autoComplete="off"
-                        aria-describedby="secret-audio-start-hint"
-                      />
-                    </div>
+                    <>
+                      <div className={styles.startTimeBridge} aria-hidden />
+                      <div className={styles.startTimeTooltip} role="tooltip">
+                        <label className={styles.startTimeLabel} htmlFor="secret-audio-start">
+                          First play starts at
+                        </label>
+                        <input
+                          id="secret-audio-start"
+                          type="text"
+                          className={styles.startTimeInput}
+                          value={startTimeDraft}
+                          onChange={(e) => handleStartTimeChange(e.target.value)}
+                          onBlur={() => flushStartTime()}
+                          placeholder="m:ss"
+                          inputMode="numeric"
+                          autoComplete="off"
+                        />
+                      </div>
+                    </>
                   )}
                 </div>
               ) : (
