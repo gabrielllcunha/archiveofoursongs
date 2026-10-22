@@ -72,13 +72,24 @@ async function fetchPlayerToken() {
   return data;
 }
 
-async function playPreview(audio: HTMLAudioElement, trackId: string, onEnded: () => void) {
+async function playPreview(
+  audio: HTMLAudioElement,
+  trackId: string,
+  onEnded: () => void,
+  onPlayingChange?: (playing: boolean) => void
+) {
   const res = await authenticatedFetch(`/api/spotify/preview?id=${encodeURIComponent(trackId)}`);
   const data = (await res.json().catch(() => ({}))) as { url?: string | null };
   if (!data.url) return false;
   audio.src = data.url;
   audio.loop = false;
-  audio.onended = onEnded;
+  audio.onplay = () => onPlayingChange?.(true);
+  audio.onplaying = () => onPlayingChange?.(true);
+  audio.onpause = () => onPlayingChange?.(false);
+  audio.onended = () => {
+    onPlayingChange?.(false);
+    onEnded();
+  };
   await audio.play().catch(() => undefined);
   return true;
 }
@@ -88,13 +99,19 @@ interface ExternalSoundtrackPlayerProps {
   externalId: string | null;
   active: boolean;
   onEnded: () => void;
+  onPlayingChange?: (playing: boolean) => void;
 }
 
-export function ExternalSoundtrackPlayer({ source, externalId, active, onEnded }: ExternalSoundtrackPlayerProps) {
+const YT_PLAYING = 1;
+const YT_BUFFERING = 3;
+
+export function ExternalSoundtrackPlayer({ source, externalId, active, onEnded, onPlayingChange }: ExternalSoundtrackPlayerProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const onEndedRef = useRef(onEnded);
+  const onPlayingChangeRef = useRef(onPlayingChange);
   onEndedRef.current = onEnded;
+  onPlayingChangeRef.current = onPlayingChange;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -106,6 +123,7 @@ export function ExternalSoundtrackPlayer({ source, externalId, active, onEnded }
         audio.removeAttribute("src");
         audio.load();
       }
+      onPlayingChangeRef.current?.(false);
       return;
     }
 
@@ -131,9 +149,13 @@ export function ExternalSoundtrackPlayer({ source, externalId, active, onEnded }
               event.target.playVideo();
             },
             onStateChange: (event: { data: number }) => {
-              if (event.data === window.YT?.PlayerState?.ENDED) {
+              const data = event.data;
+              if (data === window.YT?.PlayerState?.ENDED || data === 0) {
+                onPlayingChangeRef.current?.(false);
                 onEndedRef.current();
+                return;
               }
+              onPlayingChangeRef.current?.(data === YT_PLAYING || data === YT_BUFFERING);
             },
           },
         });
@@ -161,7 +183,9 @@ export function ExternalSoundtrackPlayer({ source, externalId, active, onEnded }
           player.addListener("player_state_changed", (state: { paused?: boolean; position?: number } | null) => {
             if (!state) return;
             const position = state.position ?? 0;
+            onPlayingChangeRef.current?.(!state.paused);
             if (state.paused && position === 0 && lastPosition > 1200) {
+              onPlayingChangeRef.current?.(false);
               onEndedRef.current();
             }
             lastPosition = position;
@@ -183,17 +207,17 @@ export function ExternalSoundtrackPlayer({ source, externalId, active, onEnded }
             })();
           });
           player.addListener("account_error", () => {
-            void playPreview(audio, externalId, () => onEndedRef.current());
+            void playPreview(audio, externalId, () => onEndedRef.current(), (playing) => onPlayingChangeRef.current?.(playing));
           });
           await player.activateElement?.().catch(() => undefined);
           await player.connect();
           return;
         }
-        await playPreview(audio, externalId, () => onEndedRef.current());
+        await playPreview(audio, externalId, () => onEndedRef.current(), (playing) => onPlayingChangeRef.current?.(playing));
       } catch (err) {
         if (err instanceof UnauthorizedSessionError) return;
         if (!cancelled && audio) {
-          await playPreview(audio, externalId, () => onEndedRef.current()).catch(() => undefined);
+          await playPreview(audio, externalId, () => onEndedRef.current(), (playing) => onPlayingChangeRef.current?.(playing)).catch(() => undefined);
         }
       }
     };
@@ -202,6 +226,7 @@ export function ExternalSoundtrackPlayer({ source, externalId, active, onEnded }
 
     return () => {
       cancelled = true;
+      onPlayingChangeRef.current?.(false);
       try {
         youtubePlayer?.stopVideo();
         youtubePlayer?.destroy();

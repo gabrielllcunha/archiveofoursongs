@@ -482,9 +482,7 @@ export const secretPagesStorage = {
 
     const res = await authenticatedFetch('/api/secret-pages/audio-url', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ year, month }),
     });
     if (!res.ok) return null;

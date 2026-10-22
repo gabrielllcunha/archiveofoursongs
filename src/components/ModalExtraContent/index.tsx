@@ -1,11 +1,12 @@
 import { ArchiveIcon, ChevronLeftIcon, ChevronRightIcon, Cross2Icon, ImageIcon } from "@radix-ui/react-icons";
 import { HiOutlineMusicNote } from "react-icons/hi";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Image from "next/image";
 import { Album } from "@/models";
 import { secretPagesStorage } from "@/services/secretPagesStorage";
 import { yearlyDataStorage } from "@/services/yearlyDataStorage";
 import { formatSecondsAsMmSs, parseTimeToSeconds } from "@/utils/audioStartTime";
+import { extractAlbumAccentColor } from "@/utils/albumAccentColor";
 import {
   encodeSpotifySoundtrackPath,
   encodeYoutubeSoundtrackPath,
@@ -411,6 +412,8 @@ export function ModalExtraContent({
   }>({ hasTrack: false, filename: null, startSeconds: 0, source: null, externalId: null });
   const [startTimeDraft, setStartTimeDraft] = useState("0:00");
   const [chooserOpen, setChooserOpen] = useState(false);
+  const [soundtrackPlaying, setSoundtrackPlaying] = useState(false);
+  const [islandAccent, setIslandAccent] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const debounceRef = useRef<number | null>(null);
   const startTimeDebounceRef = useRef<number | null>(null);
@@ -542,6 +545,8 @@ export function ModalExtraContent({
     setAudioUi({ hasTrack: false, filename: null, startSeconds: 0, source: null, externalId: null });
     setStartTimeDraft("0:00");
     setUploadError(null);
+    setSoundtrackPlaying(false);
+    setIslandAccent(null);
   }, [open, modalYear, selectedMonth]);
 
   useEffect(() => {
@@ -658,6 +663,7 @@ export function ModalExtraContent({
           el.removeAttribute("src");
         }
       }
+      if (audioUi.source === "file") setSoundtrackPlaying(false);
       return;
     }
 
@@ -686,16 +692,43 @@ export function ModalExtraContent({
       el.addEventListener("loadedmetadata", beginPlayback, { once: true });
     }
 
+    const syncPlaying = () => setSoundtrackPlaying(!el.paused && !el.ended);
+    el.addEventListener("playing", syncPlaying);
+    el.addEventListener("pause", syncPlaying);
+    el.addEventListener("ended", syncPlaying);
+
     return () => {
       el.removeEventListener("ended", onEnded);
       el.removeEventListener("loadedmetadata", beginPlayback);
+      el.removeEventListener("playing", syncPlaying);
+      el.removeEventListener("pause", syncPlaying);
+      el.removeEventListener("ended", syncPlaying);
       el.pause();
+      setSoundtrackPlaying(false);
     };
   }, [open, audioSrc, audioUi.startSeconds, audioUi.source, dialogPlaybackNonce, loadingContent, imageLoading, goNextMonth, resolvedMonthIndex, months.length]);
 
   useLayoutEffect(() => {
     setImageLoading(Boolean(backgroundImageUrl));
   }, [backgroundImageUrl, modalYear, selectedMonth]);
+
+  useEffect(() => {
+    if (!audioUi.hasTrack || !backgroundImageUrl) {
+      setIslandAccent(null);
+      return;
+    }
+    let cancelled = false;
+    void extractAlbumAccentColor(backgroundImageUrl)
+      .then((accent) => {
+        if (!cancelled) setIslandAccent(accent);
+      })
+      .catch(() => {
+        if (!cancelled) setIslandAccent(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [audioUi.hasTrack, backgroundImageUrl]);
 
   useEffect(() => {
     if (!editing || !textareaRef.current) return;
@@ -959,6 +992,7 @@ export function ModalExtraContent({
         source={audioUi.source === "youtube" || audioUi.source === "spotify" ? audioUi.source : null}
         externalId={audioUi.externalId}
         active={open && !loadingContent && !imageLoading}
+        onPlayingChange={setSoundtrackPlaying}
         onEnded={() => {
           if (resolvedMonthIndex >= months.length - 1) return;
           goNextMonth();
@@ -1034,10 +1068,41 @@ export function ModalExtraContent({
             </div>
             <div className={styles.mediaRow}>
               {audioUi.hasTrack ? (
-                <div className={`${styles.soundtrackRow}${audioUi.source !== "file" ? ` ${styles.soundtrackRowCompact}` : ""}`}>
-                  <span className={styles.soundtrackName} title={displayAudioName}>
-                    {truncateFilename(displayAudioName, 36)}
-                  </span>
+                <div className={audioUi.source === "file" ? styles.soundtrackStack : undefined}>
+                  <div
+                    className={`${styles.soundtrackIsland}${soundtrackPlaying ? ` ${styles.soundtrackIslandLive}` : ""}${islandAccent ? "" : ` ${styles.soundtrackIslandPending}`}`}
+                    style={{ "--island-accent": islandAccent ?? "255, 255, 255" } as CSSProperties}
+                  >
+                    <div className={`${styles.islandArt}${soundtrackPlaying ? ` ${styles.islandArtLive}` : ""}`}>
+                      {backgroundImageUrl ? (
+                        <Image
+                          src={backgroundImageUrl}
+                          alt=""
+                          fill
+                          sizes="36px"
+                          unoptimized
+                          className={styles.islandArtImage}
+                        />
+                      ) : (
+                        <HiOutlineMusicNote className={styles.islandArtFallback} aria-hidden />
+                      )}
+                    </div>
+                    <span className={styles.islandTitle} title={displayAudioName}>
+                      {truncateFilename(displayAudioName, 36)}
+                    </span>
+                    <div className={`${styles.islandWave}${soundtrackPlaying ? ` ${styles.islandWaveLive}` : ""}`} aria-hidden>
+                      <i /><i /><i /><i /><i />
+                    </div>
+                    <button
+                      type="button"
+                      className={styles.soundtrackRemove}
+                      aria-label="Remove soundtrack"
+                      disabled={removeBusy || uploadBusy}
+                      onClick={() => void handleRemoveAudio()}
+                    >
+                      <Cross2Icon width={16} height={16} />
+                    </button>
+                  </div>
                   {audioUi.source === "file" && (
                     <div className={styles.startTimeRow}>
                       <label className={styles.startTimeLabel} htmlFor="secret-audio-start">
@@ -1057,15 +1122,6 @@ export function ModalExtraContent({
                       />
                     </div>
                   )}
-                  <button
-                    type="button"
-                    className={styles.soundtrackRemove}
-                    aria-label="Remove soundtrack"
-                    disabled={removeBusy || uploadBusy}
-                    onClick={() => void handleRemoveAudio()}
-                  >
-                    <Cross2Icon width={16} height={16} />
-                  </button>
                 </div>
               ) : (
                 <button
