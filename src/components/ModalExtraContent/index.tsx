@@ -394,6 +394,8 @@ export function ModalExtraContent({
   const [content, setContent] = useState("");
   const [loadingContent, setLoadingContent] = useState(false);
   const [editing, setEditing] = useState(false);
+  const editingRef = useRef(false);
+  editingRef.current = editing;
   const [albumEntries, setAlbumEntries] = useState<Album[]>(albums);
   const [imageLoading, setImageLoading] = useState(false);
   const [audioSrc, setAudioSrc] = useState<string | null>(null);
@@ -465,6 +467,12 @@ export function ModalExtraContent({
       onYearChange(y);
     }
   }, [selectedMonthIndex, modalYear, maxYear, months.length, onYearChange]);
+
+  const advanceAfterSoundtrack = useCallback(() => {
+    if (editingRef.current) return;
+    if (resolvedMonthIndex >= months.length - 1) return;
+    goNextMonth();
+  }, [goNextMonth, resolvedMonthIndex, months.length]);
 
   const prevDisabled = resolvedMonthIndex === 0 && modalYear <= minYear;
   const nextDisabled = resolvedMonthIndex === months.length - 1 && modalYear >= maxYear;
@@ -677,8 +685,7 @@ export function ModalExtraContent({
     };
 
     const onEnded = () => {
-      if (resolvedMonthIndex >= months.length - 1) return;
-      goNextMonth();
+      advanceAfterSoundtrack();
     };
 
     el.loop = false;
@@ -706,7 +713,7 @@ export function ModalExtraContent({
       el.pause();
       setSoundtrackPlaying(false);
     };
-  }, [open, audioSrc, audioUi.startSeconds, audioUi.source, dialogPlaybackNonce, loadingContent, imageLoading, goNextMonth, resolvedMonthIndex, months.length]);
+  }, [open, audioSrc, audioUi.startSeconds, audioUi.source, dialogPlaybackNonce, loadingContent, imageLoading, advanceAfterSoundtrack]);
 
   useLayoutEffect(() => {
     setImageLoading(Boolean(backgroundImageUrl));
@@ -770,7 +777,7 @@ export function ModalExtraContent({
   const saveAudioStartSeconds = useCallback(
     async (seconds: number) => {
       const username = localStorage.getItem("lastfm_username");
-      if (!username || !audioUi.hasTrack || audioUi.source !== "file") return;
+      if (!username || !audioUi.hasTrack) return;
       const clamped = Math.max(0, seconds);
       await secretPagesStorage.storeSecretPage(username, modalYear, selectedMonth, {
         audio_start_seconds: clamped,
@@ -778,7 +785,7 @@ export function ModalExtraContent({
       setAudioUi((u) => ({ ...u, startSeconds: clamped }));
       setStartTimeDraft(formatSecondsAsMmSs(clamped));
     },
-    [audioUi.hasTrack, audioUi.source, selectedMonth, modalYear]
+    [audioUi.hasTrack, selectedMonth, modalYear]
   );
 
   const handleChange = (value: string) => {
@@ -992,11 +999,9 @@ export function ModalExtraContent({
         source={audioUi.source === "youtube" || audioUi.source === "spotify" ? audioUi.source : null}
         externalId={audioUi.externalId}
         active={open && !loadingContent && !imageLoading}
+        startSeconds={audioUi.startSeconds}
         onPlayingChange={setSoundtrackPlaying}
-        onEnded={() => {
-          if (resolvedMonthIndex >= months.length - 1) return;
-          goNextMonth();
-        }}
+        onEnded={advanceAfterSoundtrack}
       />
       <div ref={surfaceRef} className={styles.dialogContent}>
         <button
@@ -1103,27 +1108,23 @@ export function ModalExtraContent({
                       <Cross2Icon width={16} height={16} />
                     </button>
                   </div>
-                  {audioUi.source === "file" && (
-                    <>
-                      <div className={styles.startTimeBridge} aria-hidden />
-                      <div className={styles.startTimeTooltip} role="tooltip">
-                        <label className={styles.startTimeLabel} htmlFor="secret-audio-start">
-                          First play starts at
-                        </label>
-                        <input
-                          id="secret-audio-start"
-                          type="text"
-                          className={styles.startTimeInput}
-                          value={startTimeDraft}
-                          onChange={(e) => handleStartTimeChange(e.target.value)}
-                          onBlur={() => flushStartTime()}
-                          placeholder="m:ss"
-                          inputMode="numeric"
-                          autoComplete="off"
-                        />
-                      </div>
-                    </>
-                  )}
+                  <div className={styles.startTimeBridge} aria-hidden />
+                  <div className={styles.startTimeTooltip} role="tooltip">
+                    <label className={styles.startTimeLabel} htmlFor="secret-audio-start">
+                      First play starts at
+                    </label>
+                    <input
+                      id="secret-audio-start"
+                      type="text"
+                      className={styles.startTimeInput}
+                      value={startTimeDraft}
+                      onChange={(e) => handleStartTimeChange(e.target.value)}
+                      onBlur={() => flushStartTime()}
+                      placeholder="m:ss"
+                      inputMode="numeric"
+                      autoComplete="off"
+                    />
+                  </div>
                 </div>
               ) : (
                 <button
