@@ -6,6 +6,7 @@ import { Button, AppFooter, MonthItem, Popover, Progress, SegmentedControl, Sele
 import { fetchDataFromEndpoint } from "@/utils/fetchDataFromEndpoint";
 import { authenticatedFetch, onUnauthorizedSession, performUnauthorizedLogout, UnauthorizedSessionError } from "@/utils/authenticatedFetch";
 import { yearlyDataStorage, type MonthlyEntry } from '@/services/yearlyDataStorage';
+import { secretPagesStorage } from '@/services/secretPagesStorage';
 import { getMonthsNeedingFetch } from '@/utils/monthlyEntryCompleteness';
 import type { YearlyDataType } from '@/services/supabaseService';
 import { supabase } from "@/utils/supabase";
@@ -437,6 +438,30 @@ export function HomePage() {
     if (year >= effectiveEarliestYear) return;
     setYear(effectiveEarliestYear);
   }, [effectiveEarliestYear, year]);
+
+  useEffect(() => {
+    if (!authenticatedWithLastfm) {
+      secretPagesStorage.clearSessionCache();
+      return;
+    }
+    const username = localStorage.getItem("lastfm_username");
+    if (!username) return;
+    const selectedYear = year;
+    let cancelled = false;
+    void (async () => {
+      await secretPagesStorage.prefetchYear(username, selectedYear, { refresh: true });
+      if (cancelled) return;
+      void secretPagesStorage.prefetchYear(username, selectedYear - 1);
+      if (selectedYear < currentYear) void secretPagesStorage.prefetchYear(username, selectedYear + 1);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticatedWithLastfm, currentYear, year]);
+
+  useEffect(() => {
+    secretPagesStorage.warmImages(albums.map((album) => album.imageUrl));
+  }, [albums]);
 
   const handleLogout = async () => {
     await performUnauthorizedLogout();

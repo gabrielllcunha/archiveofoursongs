@@ -7,6 +7,21 @@ import {
 } from '@/utils/secretPageCrypto';
 import { ensureSecretPagesKeyMaterial } from '@/utils/ensureSecretPagesKeyMaterial';
 import { isStoredFileAudioPath } from '@/utils/soundtrackSource';
+import {
+  SECRET_PAGE_MONTHS,
+  clearSecretPageSessionCache,
+  fillSecretPageYearFromNetwork,
+  forgetAudioPlaybackUrl,
+  isSecretPageYearLoaded,
+  peekAudioPlaybackUrl as peekCachedAudioPlaybackUrl,
+  peekSecretPage as peekCachedSecretPage,
+  peekSecretPageSlot,
+  rememberAudioPlaybackUrl,
+  rememberSecretPageLocal,
+  secretPageCacheGeneration,
+  subscribeSecretPageCache,
+  warmImages as warmImageUrls,
+} from '@/services/secretPagesYearCache';
 
 export type SecretPageRecord = {
   content: string;
@@ -130,6 +145,144 @@ async function fetchSupabaseSecretPage(
   };
 }
 
+async function fetchSupabaseSecretPagesForYear(year: number): Promise<Array<{ month: string; record: SecretPageRecord; rawEncryptedContent: string | null; needsReencryptWithSyncKey: boolean }>> {
+  if (!supabase) return [];
+  const userId = await requireSessionUserId();
+  await ensureSecretPagesKeyMaterial();
+  const { data, error } = await supabase
+    .from('secret_pages')
+    .select('month, content, audio_storage_path, album_cover_url, audio_original_filename, audio_start_seconds')
+    .eq('user_id', userId)
+    .eq('year', year);
+  if (error) throw error;
+
+  const rows = data ?? [];
+  return Promise.all(rows.map(async (row) => {
+    const month = typeof row.month === 'string' ? row.month : '';
+    const mapped = mapRow(row);
+    const rawContent = row.content ?? '';
+    const decrypted = await decryptSecretPageContentDetailed(userId, rawContent);
+    if (decrypted.decryptFailed) {
+      return {
+        month,
+        record: { ...mapped, content: '', decryptFailed: true },
+        rawEncryptedContent: rawContent || null,
+        needsReencryptWithSyncKey: false,
+      };
+    }
+    return {
+      month,
+      record: { ...mapped, content: decrypted.plaintext, decryptFailed: false },
+      rawEncryptedContent: rawContent || null,
+      needsReencryptWithSyncKey: decrypted.needsReencryptWithSyncKey,
+    };
+  }));
+}
+
+const yearPrefetchInflight = new Map<string, Promise<void>>();
+
+async function readYearFromIndexedDb(username: string, year: number) {
+  return Promise.all(SECRET_PAGE_MONTHS.map(async (month) => {
+    const local = await idbSecretPages.getSecretPageRecord(username, year, month);
+    return {
+      month,
+      record: {
+        content: local.content,
+        audio_storage_path: local.audio_storage_path,
+        album_cover_url: local.album_cover_url,
+        audio_original_filename: local.audio_original_filename,
+        audio_start_seconds: local.audio_start_seconds,
+        audio_blob: local.audio_blob ?? null,
+        decryptFailed: false,
+      } satisfies SecretPageRecord,
+      rawEncryptedContent: null,
+    };
+  }));
+}
+
+async function prefetchSecretPagesYear(username: string, year: number, options?: { refresh?: boolean }): Promise<void> {
+  const key = `${username}::${year}`;
+  const existing = yearPrefetchInflight.get(key);
+  if (!options?.refresh) {
+    if (isSecretPageYearLoaded(username, year)) return;
+    if (existing) return existing;
+  } else if (existing) {
+    await existing;
+    if (isSecretPageYearLoaded(username, year)) return;
+  }
+  if (!options?.refresh && isSecretPageYearLoaded(username, year)) return;
+
+  const startedGeneration = secretPageCacheGeneration();
+  const job = (async () => {
+    if (supabase) {
+      try {
+        const fetched = await fetchSupabaseSecretPagesForYear(year);
+        for (const entry of fetched) {
+          if (!entry.needsReencryptWithSyncKey || entry.record.decryptFailed || !storedContentIsNonEmpty(entry.record.content)) continue;
+          void upsertSupabaseSecretPage(year, entry.month, entry.record).catch(() => undefined);
+        }
+        if (isBrowserIndexedDbAvailable()) {
+          await Promise.all(fetched.map((entry) => {
+            if (entry.record.decryptFailed) return Promise.resolve();
+            return idbSecretPages.storeSecretPageRecord(username, year, entry.month, toIdbPayload(entry.record)).catch(() => undefined);
+          }));
+        }
+        if (secretPageCacheGeneration() !== startedGeneration) return;
+        fillSecretPageYearFromNetwork(username, year, fetched);
+        warmCachedYearPlayback(username, year);
+        return;
+      } catch (error) {
+        if (error instanceof UnauthorizedSessionError) throw error;
+      }
+    }
+
+    if (secretPageCacheGeneration() !== startedGeneration) return;
+    const fallback = isBrowserIndexedDbAvailable() ? await readYearFromIndexedDb(username, year) : [];
+    if (secretPageCacheGeneration() !== startedGeneration) return;
+    fillSecretPageYearFromNetwork(username, year, fallback);
+  })();
+
+  yearPrefetchInflight.set(key, job);
+  try {
+    await job;
+  } finally {
+    if (yearPrefetchInflight.get(key) === job) yearPrefetchInflight.delete(key);
+  }
+}
+
+function warmCachedYearPlayback(username: string, year: number) {
+  for (const month of SECRET_PAGE_MONTHS) {
+    const record = peekCachedSecretPage(username, year, month);
+    if (!record || !isStoredFileAudioPath(record.audio_storage_path)) continue;
+    void resolveAudioPlaybackUrl(year, month, record).catch(() => undefined);
+  }
+}
+
+const AUDIO_URL_TTL_MS = 50 * 60 * 1000;
+
+async function resolveAudioPlaybackUrl(year: number, month: string, record: SecretPageRecord): Promise<string | null> {
+  const cached = peekCachedAudioPlaybackUrl(year, month, record);
+  if (cached) return cached;
+
+  if (record.audio_blob && record.audio_blob.byteLength > 0) {
+    const url = URL.createObjectURL(new Blob([record.audio_blob], { type: 'audio/mpeg' }));
+    rememberAudioPlaybackUrl(year, month, record, url, true, AUDIO_URL_TTL_MS);
+    return url;
+  }
+  if (!isStoredFileAudioPath(record.audio_storage_path)) return null;
+
+  const res = await authenticatedFetch('/api/secret-pages/audio-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ year, month }),
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { url?: string | null };
+  const url = data.url ?? null;
+  if (url) rememberAudioPlaybackUrl(year, month, record, url, false, AUDIO_URL_TTL_MS);
+  return url;
+}
+
 async function upsertSupabaseSecretPage(
   year: number,
   month: string,
@@ -205,6 +358,17 @@ function toIdbPayload(record: SecretPageRecord): idbSecretPages.SecretPageIdbVal
 
 export const secretPagesStorage = {
   async getSecretPage(lastfmUsername: string, year: number, month: string): Promise<SecretPageRecord> {
+    if (!isSecretPageYearLoaded(lastfmUsername, year)) {
+      try {
+        await prefetchSecretPagesYear(lastfmUsername, year);
+      } catch (error) {
+        if (error instanceof UnauthorizedSessionError) throw error;
+      }
+    }
+    if (isSecretPageYearLoaded(lastfmUsername, year)) {
+      return peekCachedSecretPage(lastfmUsername, year, month) ?? emptyRecord();
+    }
+
     if (!isBrowserIndexedDbAvailable()) {
       if (!supabase) return emptyRecord();
       try {
@@ -282,7 +446,33 @@ export const secretPagesStorage = {
     let cloudUnreachable = false;
     let existingRawContent: string | null = null;
 
-    if (supabase) {
+    if (!isSecretPageYearLoaded(lastfmUsername, year)) {
+      try {
+        await prefetchSecretPagesYear(lastfmUsername, year);
+      } catch (error) {
+        if (error instanceof UnauthorizedSessionError) throw error;
+        cloudUnreachable = true;
+      }
+    }
+
+    const cachedSlot = isSecretPageYearLoaded(lastfmUsername, year)
+      ? peekSecretPageSlot(lastfmUsername, year, month)
+      : null;
+
+    if (cachedSlot) {
+      base = { ...cachedSlot.record };
+      decryptFailed = Boolean(cachedSlot.record.decryptFailed);
+      existingRawContent = cachedSlot.rawEncryptedContent;
+      const incomingContent = patch.content;
+      const incomingEmpty = incomingContent === undefined || !incomingContent.trim();
+      const refuseUnreadReplace = decryptFailed && !options?.allowReplaceUnreadContent;
+      if (cachedSlot.rawEncryptedContent && (incomingEmpty || refuseUnreadReplace)) {
+        preserveEncryptedContent = cachedSlot.rawEncryptedContent;
+      }
+      if (incomingEmpty && storedContentIsNonEmpty(cachedSlot.rawEncryptedContent)) {
+        preserveEncryptedContent = cachedSlot.rawEncryptedContent;
+      }
+    } else if (supabase && !cloudUnreachable) {
       try {
         const fetched = await fetchSupabaseSecretPage(year, month);
         if (fetched.record) {
@@ -326,8 +516,10 @@ export const secretPagesStorage = {
     }
 
     const incomingEmpty = patch.content === undefined || !patch.content.trim();
+    const contentBeforeGuard = patch.content;
     const refuseUnreadReplace = decryptFailed && !options?.allowReplaceUnreadContent;
-    if ((decryptFailed && incomingEmpty) || refuseUnreadReplace || (incomingEmpty && storedContentIsNonEmpty(existingRawContent))) {
+    const keepExistingText = incomingEmpty && patch.content !== undefined && (storedContentIsNonEmpty(existingRawContent) || storedContentIsNonEmpty(base.content));
+    if ((decryptFailed && incomingEmpty) || refuseUnreadReplace || (incomingEmpty && storedContentIsNonEmpty(existingRawContent)) || keepExistingText) {
       const { content: _ignored, decryptFailed: _df, ...safePatch } = patch;
       patch = safePatch;
       if (Object.keys(patch).length === 0 && (preserveEncryptedContent || incomingEmpty)) {
@@ -345,8 +537,23 @@ export const secretPagesStorage = {
         patch.audio_original_filename !== undefined
           ? patch.audio_original_filename
           : base.audio_original_filename,
-      decryptFailed: false,
+      decryptFailed: decryptFailed && !(options?.allowReplaceUnreadContent && storedContentIsNonEmpty(contentBeforeGuard)),
     };
+
+    if (
+      base.audio_storage_path !== next.audio_storage_path ||
+      patch.audio_blob !== undefined
+    ) {
+      forgetAudioPlaybackUrl(year, month);
+    }
+    const wroteNewPlaintext = patch.content !== undefined && Boolean(patch.content.trim()) && !preserveEncryptedContent;
+    rememberSecretPageLocal(
+      lastfmUsername,
+      year,
+      month,
+      next,
+      wroteNewPlaintext ? null : preserveEncryptedContent ?? undefined
+    );
 
     if (decryptFailed && options?.allowReplaceUnreadContent && storedContentIsNonEmpty(patch.content)) {
       preserveEncryptedContent = null;
@@ -425,7 +632,25 @@ export const secretPagesStorage = {
       throw new Error('Upload failed; saved locally only');
     }
 
-    await res.json().catch(() => ({}));
+    const data = (await res.json().catch(() => ({}))) as { audio_storage_path?: string };
+    const path = typeof data.audio_storage_path === 'string' ? data.audio_storage_path : null;
+    if (!path) return;
+    try {
+      await prefetchSecretPagesYear(lastfmUsername, year);
+    } catch (error) {
+      if (error instanceof UnauthorizedSessionError) throw error;
+    }
+    const current = peekCachedSecretPage(lastfmUsername, year, month) ?? emptyRecord();
+    const next: SecretPageRecord = {
+      ...current,
+      audio_storage_path: path,
+      audio_original_filename: file.name.slice(0, 240),
+      audio_start_seconds: 0,
+      audio_blob: null,
+    };
+    forgetAudioPlaybackUrl(year, month);
+    rememberSecretPageLocal(lastfmUsername, year, month, next);
+    void resolveAudioPlaybackUrl(year, month, next).catch(() => undefined);
   },
 
   async setExternalSoundtrack(
@@ -470,23 +695,31 @@ export const secretPagesStorage = {
     return serverOk;
   },
 
-  async getAudioPlaybackUrl(
-    year: number,
-    month: string,
-    record: SecretPageRecord
-  ): Promise<string | null> {
-    if (record.audio_blob && record.audio_blob.byteLength > 0) {
-      return URL.createObjectURL(new Blob([record.audio_blob], { type: 'audio/mpeg' }));
-    }
-    if (!isStoredFileAudioPath(record.audio_storage_path)) return null;
+  async getAudioPlaybackUrl(year: number, month: string, record: SecretPageRecord): Promise<string | null> {
+    return resolveAudioPlaybackUrl(year, month, record);
+  },
 
-    const res = await authenticatedFetch('/api/secret-pages/audio-url', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ year, month }),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { url?: string | null };
-    return data.url ?? null;
+  prefetchYear(lastfmUsername: string, year: number, options?: { refresh?: boolean }): Promise<void> {
+    return prefetchSecretPagesYear(lastfmUsername, year, options);
+  },
+
+  subscribe(listener: () => void) {
+    return subscribeSecretPageCache(listener);
+  },
+
+  peekSecretPage(lastfmUsername: string, year: number, month: string): SecretPageRecord | null {
+    return peekCachedSecretPage(lastfmUsername, year, month);
+  },
+
+  peekAudioPlaybackUrl(year: number, month: string, record: SecretPageRecord): string | null {
+    return peekCachedAudioPlaybackUrl(year, month, record);
+  },
+
+  warmImages(urls: Array<string | null | undefined>) {
+    warmImageUrls(urls);
+  },
+
+  clearSessionCache() {
+    clearSecretPageSessionCache();
   },
 };

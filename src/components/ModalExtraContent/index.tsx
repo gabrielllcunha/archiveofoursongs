@@ -3,7 +3,7 @@ import { HiOutlineMusicNote } from "react-icons/hi";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Image from "next/image";
 import { Album } from "@/models";
-import { secretPagesStorage } from "@/services/secretPagesStorage";
+import { secretPagesStorage, type SecretPageRecord } from "@/services/secretPagesStorage";
 import { yearlyDataStorage } from "@/services/yearlyDataStorage";
 import { formatSecondsAsMmSs, parseTimeToSeconds } from "@/utils/audioStartTime";
 import { extractAlbumAccentColor } from "@/utils/albumAccentColor";
@@ -420,9 +420,9 @@ export function ModalExtraContent({
   const debounceRef = useRef<number | null>(null);
   const startTimeDebounceRef = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioBlobUrlRef = useRef<string | null>(null);
   const keyboardFocusAnchorRef = useRef<HTMLDivElement | null>(null);
   const viewRevisionRef = useRef(0);
+  const appliedPageSignatureRef = useRef("");
   const decryptFailedRef = useRef(false);
   const contentLoadedKeyRef = useRef<string | null>(null);
   const loadedRevisionRef = useRef<number | null>(null);
@@ -483,9 +483,54 @@ export function ModalExtraContent({
     nextDisabled,
   });
 
+  const applyLoadedSecretPage = useCallback((rec: SecretPageRecord, revision: number) => {
+    decryptFailedRef.current = Boolean(rec.decryptFailed);
+    contentLoadedKeyRef.current = `${modalYear}:${selectedMonth}`;
+    loadedRevisionRef.current = revision;
+    loadedHadContentRef.current = Boolean(rec.content.trim()) || Boolean(rec.decryptFailed);
+    lastSavedContentRef.current = rec.content;
+    setContent(rec.content);
+    setSavedAlbumCoverUrl(rec.album_cover_url);
+    const hasBlob = Boolean(rec.audio_blob && rec.audio_blob.byteLength > 0);
+    const source = getSoundtrackSource(rec.audio_storage_path, hasBlob);
+    const startSec = typeof rec.audio_start_seconds === "number" && Number.isFinite(rec.audio_start_seconds) ? Math.max(0, rec.audio_start_seconds) : 0;
+    setAudioUi({
+      hasTrack: source !== null,
+      filename: rec.audio_original_filename,
+      startSeconds: startSec,
+      source,
+      externalId: source === "youtube" ? parseYoutubeSoundtrackId(rec.audio_storage_path) : source === "spotify" ? parseSpotifySoundtrackId(rec.audio_storage_path) : null,
+    });
+    setStartTimeDraft(formatSecondsAsMmSs(startSec));
+    setLoadingContent(false);
+    appliedPageSignatureRef.current = `${modalYear}:${selectedMonth}:${rec.content}:${rec.audio_storage_path ?? ""}:${rec.album_cover_url ?? ""}:${startSec}:${Boolean(rec.decryptFailed)}`;
+  }, [modalYear, selectedMonth]);
+
   useEffect(() => {
     const username = localStorage.getItem("lastfm_username");
     if (!username) return;
+    void secretPagesStorage.prefetchYear(username, modalYear);
+  }, [modalYear]);
+
+  useEffect(() => {
+    return secretPagesStorage.subscribe(() => {
+      if (!open || editingRef.current) return;
+      const username = localStorage.getItem("lastfm_username");
+      if (!username) return;
+      const cached = secretPagesStorage.peekSecretPage(username, modalYear, selectedMonth);
+      if (!cached) return;
+      const startSec = typeof cached.audio_start_seconds === "number" && Number.isFinite(cached.audio_start_seconds) ? Math.max(0, cached.audio_start_seconds) : 0;
+      const signature = `${modalYear}:${selectedMonth}:${cached.content}:${cached.audio_storage_path ?? ""}:${cached.album_cover_url ?? ""}:${startSec}:${Boolean(cached.decryptFailed)}`;
+      if (appliedPageSignatureRef.current === signature) return;
+      applyLoadedSecretPage(cached, viewRevisionRef.current);
+      const peekedUrl = secretPagesStorage.peekAudioPlaybackUrl(modalYear, selectedMonth, cached);
+      if (peekedUrl || !cached.audio_storage_path) setAudioSrc(peekedUrl);
+    });
+  }, [open, modalYear, selectedMonth, applyLoadedSecretPage]);
+
+  useEffect(() => {
+    const username = localStorage.getItem("lastfm_username");
+    if (!username || modalYear === year) return;
 
     const yearToLoad = modalYear;
     let cancelled = false;
@@ -502,7 +547,7 @@ export function ModalExtraContent({
     return () => {
       cancelled = true;
     };
-  }, [modalYear]);
+  }, [modalYear, year]);
 
   useEffect(() => {
     setView((current) => (current.year === year ? current : { ...current, year }));
@@ -519,8 +564,12 @@ export function ModalExtraContent({
   }, [open, pendingMonthIndex, onPendingMonthConsumed]);
 
   useLayoutEffect(() => {
+    if (modalYear === year) {
+      setAlbumEntries(albums);
+      return;
+    }
     setAlbumEntries([]);
-  }, [modalYear]);
+  }, [albums, modalYear, year]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -540,22 +589,32 @@ export function ModalExtraContent({
       window.clearTimeout(startTimeDebounceRef.current);
       startTimeDebounceRef.current = null;
     }
+    const username = localStorage.getItem("lastfm_username");
+    const cached = open && username ? secretPagesStorage.peekSecretPage(username, modalYear, selectedMonth) : null;
+    setEditing(false);
+    setUploadError(null);
+    setSoundtrackPlaying(false);
+    setIslandAccent(null);
+    if (cached) {
+      applyLoadedSecretPage(cached, viewRevisionRef.current);
+      const peekedUrl = secretPagesStorage.peekAudioPlaybackUrl(modalYear, selectedMonth, cached);
+      setAudioSrc(peekedUrl);
+      setImageLoading(false);
+      return;
+    }
     decryptFailedRef.current = false;
     contentLoadedKeyRef.current = null;
     loadedRevisionRef.current = null;
     loadedHadContentRef.current = false;
     lastSavedContentRef.current = "";
-    setEditing(false);
     setSavedAlbumCoverUrl(null);
     setContent("");
     setLoadingContent(true);
     setImageLoading(false);
+    setAudioSrc(null);
     setAudioUi({ hasTrack: false, filename: null, startSeconds: 0, source: null, externalId: null });
     setStartTimeDraft("0:00");
-    setUploadError(null);
-    setSoundtrackPlaying(false);
-    setIslandAccent(null);
-  }, [open, modalYear, selectedMonth]);
+  }, [open, modalYear, selectedMonth, audioReloadNonce, applyLoadedSecretPage]);
 
   useEffect(() => {
     if (open) {
@@ -565,15 +624,6 @@ export function ModalExtraContent({
     setAudioSrc(null);
     setChooserOpen(false);
   }, [open, stopAudioPlayback]);
-
-  useLayoutEffect(() => {
-    if (!localStorage.getItem("lastfm_username")) return;
-    if (audioBlobUrlRef.current) {
-      URL.revokeObjectURL(audioBlobUrlRef.current);
-      audioBlobUrlRef.current = null;
-    }
-    setAudioSrc(null);
-  }, [modalYear, selectedMonth, audioReloadNonce]);
 
   useEffect(() => {
     if (!open) return;
@@ -590,22 +640,12 @@ export function ModalExtraContent({
 
     let cancelled = false;
     const revision = viewRevisionRef.current;
-
-    setLoadingContent(true);
-    setUploadError(null);
-    setAudioSrc(null);
+    const hadCache = secretPagesStorage.peekSecretPage(username, modalYear, selectedMonth) !== null;
 
     (async () => {
       const rec = await secretPagesStorage.getSecretPage(username, modalYear, selectedMonth);
       if (cancelled || revision !== viewRevisionRef.current) return;
-      const pageKey = `${modalYear}:${selectedMonth}`;
-      decryptFailedRef.current = Boolean(rec.decryptFailed);
-      contentLoadedKeyRef.current = pageKey;
-      loadedRevisionRef.current = revision;
-      loadedHadContentRef.current = Boolean(rec.content.trim()) || Boolean(rec.decryptFailed);
-      lastSavedContentRef.current = rec.content;
-      setContent(rec.content);
-      setSavedAlbumCoverUrl(rec.album_cover_url);
+      if (!hadCache) applyLoadedSecretPage(rec, revision);
       if (rec.decryptFailed) {
         showToast({
           title: 'Could not load this note',
@@ -616,50 +656,18 @@ export function ModalExtraContent({
       }
       const hasBlob = Boolean(rec.audio_blob && rec.audio_blob.byteLength > 0);
       const source = getSoundtrackSource(rec.audio_storage_path, hasBlob);
-      const hasTrack = source !== null;
-      const startSec =
-        typeof rec.audio_start_seconds === "number" && Number.isFinite(rec.audio_start_seconds)
-          ? Math.max(0, rec.audio_start_seconds)
-          : 0;
-      setAudioUi({
-        hasTrack,
-        filename: rec.audio_original_filename,
-        startSeconds: startSec,
-        source,
-        externalId:
-          source === "youtube"
-            ? parseYoutubeSoundtrackId(rec.audio_storage_path)
-            : source === "spotify"
-              ? parseSpotifySoundtrackId(rec.audio_storage_path)
-              : null,
-      });
-      setStartTimeDraft(formatSecondsAsMmSs(startSec));
-      const url = source === "file"
-        ? await secretPagesStorage.getAudioPlaybackUrl(modalYear, selectedMonth, rec)
-        : null;
-      if (cancelled || revision !== viewRevisionRef.current) {
-        if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
-        return;
-      }
-      if (url?.startsWith("blob:")) audioBlobUrlRef.current = url;
+      const hadPeekedUrl = source === "file" && Boolean(secretPagesStorage.peekAudioPlaybackUrl(modalYear, selectedMonth, rec));
+      const url = source === "file" ? await secretPagesStorage.getAudioPlaybackUrl(modalYear, selectedMonth, rec) : null;
+      if (cancelled || revision !== viewRevisionRef.current) return;
       setAudioSrc(url);
       setLoadingContent(false);
-      setDialogPlaybackNonce((n) => n + 1);
+      if (!hadPeekedUrl) setDialogPlaybackNonce((n) => n + 1);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [open, modalYear, selectedMonth, audioReloadNonce, showToast]);
-
-  useEffect(() => {
-    return () => {
-      if (audioBlobUrlRef.current) {
-        URL.revokeObjectURL(audioBlobUrlRef.current);
-        audioBlobUrlRef.current = null;
-      }
-    };
-  }, []);
+  }, [open, modalYear, selectedMonth, audioReloadNonce, showToast, applyLoadedSecretPage]);
 
   useEffect(() => {
     const el = audioRef.current;
@@ -716,7 +724,13 @@ export function ModalExtraContent({
   }, [open, audioSrc, audioUi.startSeconds, audioUi.source, dialogPlaybackNonce, loadingContent, imageLoading, advanceAfterSoundtrack]);
 
   useLayoutEffect(() => {
-    setImageLoading(Boolean(backgroundImageUrl));
+    if (!backgroundImageUrl) {
+      setImageLoading(false);
+      return;
+    }
+    const probe = document.createElement("img");
+    probe.src = backgroundImageUrl;
+    setImageLoading(!(probe.complete && probe.naturalWidth > 0));
   }, [backgroundImageUrl, modalYear, selectedMonth]);
 
   useEffect(() => {
