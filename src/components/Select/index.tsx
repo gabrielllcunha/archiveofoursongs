@@ -1,6 +1,7 @@
 import styles from "./styles.module.scss";
 import * as RadixSelect from "@radix-ui/react-select";
 import { ChevronDownIcon, ChevronUpIcon, CheckIcon } from "@radix-ui/react-icons";
+import { Spinner } from "../Spinner";
 
 interface SelectProps {
     value: string;
@@ -8,15 +9,16 @@ interface SelectProps {
     items: { value: string; label: string; disabled?: boolean }[];
     label?: string;
     className?: string;
+    loading?: boolean;
 }
 
-export function Select({ value, onChange, items, label, className }: SelectProps) {
+export function Select({ value, onChange, items, label, className, loading = false }: SelectProps) {
     return (
         <RadixSelect.Root value={value} onValueChange={onChange}>
-            <RadixSelect.Trigger className={`${styles.trigger} ${className ?? ""}`} aria-label={label}>
+            <RadixSelect.Trigger className={`${styles.trigger} ${className ?? ""}${loading ? ` ${styles.triggerLoading}` : ""}`} aria-label={label} aria-busy={loading}>
                 <RadixSelect.Value />
                 <RadixSelect.Icon className={styles.icon}>
-                    <ChevronDownIcon />
+                    {loading ? <Spinner size="small" /> : <ChevronDownIcon />}
                 </RadixSelect.Icon>
             </RadixSelect.Trigger>
 

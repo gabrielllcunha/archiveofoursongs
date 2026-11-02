@@ -38,6 +38,7 @@ export function HomePage() {
 
   const [sessionStarted, setSessionStarted] = useState(false);
   const [canAccessCurrentYear, setCanAccessCurrentYear] = useState(false);
+  const [yearAccessReady, setYearAccessReady] = useState(false);
   const [earliestSelectableYear, setEarliestSelectableYear] = useState(defaultLatestSelectableYear);
   const [extraModalOpen, setExtraModalOpen] = useState(false);
   const [extraModalPendingMonth, setExtraModalPendingMonth] = useState<number | null>(null);
@@ -385,6 +386,7 @@ export function HomePage() {
     if (!authenticatedWithLastfm) {
       setLastfmUsername(null);
       setCanAccessCurrentYear(false);
+      setYearAccessReady(false);
       setEarliestSelectableYear(defaultLatestSelectableYear);
       return;
     }
@@ -394,7 +396,10 @@ export function HomePage() {
     void (async () => {
       try {
         const res = await authenticatedFetch("/api/user/year-access");
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (!cancelled) setYearAccessReady(true);
+          return;
+        }
         const data = (await res.json()) as {
           canAccessCurrentYear?: boolean;
           earliestSelectableYear?: number;
@@ -407,11 +412,13 @@ export function HomePage() {
           ) {
             setEarliestSelectableYear(data.earliestSelectableYear);
           }
+          setYearAccessReady(true);
         }
       } catch (error) {
         if (error instanceof UnauthorizedSessionError) return;
         if (!cancelled) {
           setCanAccessCurrentYear(false);
+          setYearAccessReady(true);
         }
       }
     })();
@@ -518,6 +525,7 @@ export function HomePage() {
                 onChange={handleYearChange}
                 items={yearOptions}
                 className={styles.yearSelect}
+                loading={!yearAccessReady}
               />
             </div>
             <div className={styles.contentWrapper}>
