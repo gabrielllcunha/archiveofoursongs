@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 const ALLOWED_HOSTS = [
   "lastfm.freetls.fastly.net",
+  "lastfm-img.freetls.fastly.net",
   "lastfm-img2.akamaized.net",
 ];
 

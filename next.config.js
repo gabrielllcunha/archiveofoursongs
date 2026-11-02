@@ -35,6 +35,16 @@ const nextConfig = {
         hostname: 'lastfm.freetls.fastly.net',
         pathname: '**',
       },
+      {
+        protocol: 'https',
+        hostname: 'lastfm-img.freetls.fastly.net',
+        pathname: '**',
+      },
+      {
+        protocol: 'https',
+        hostname: 'lastfm-img2.akamaized.net',
+        pathname: '**',
+      },
     ],
   },
 }
