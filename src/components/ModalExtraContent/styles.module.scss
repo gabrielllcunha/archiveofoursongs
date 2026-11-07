@@ -286,6 +286,19 @@
   }
 }
 
+.leftPanelPlain {
+  background: none;
+  backdrop-filter: none;
+  mask-image: none;
+  -webkit-mask-image: none;
+
+  @media (max-width: 768px) {
+    background: none;
+    mask-image: none;
+    -webkit-mask-image: none;
+  }
+}
+
 .rightSpacer {
   flex: 1;
   min-width: 0;
@@ -881,7 +894,7 @@
 .imagePlaceholder {
   position: absolute;
   inset: 0;
-  border: 1px dashed rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   display: flex;
   align-items: center;
   justify-content: center;

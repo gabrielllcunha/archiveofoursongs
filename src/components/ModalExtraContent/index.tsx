@@ -1060,7 +1060,7 @@ export function ModalExtraContent({
         )}
 
         <div className={styles.foregroundContent}>
-          <div className={styles.leftPanel}>
+          <div className={`${styles.leftPanel}${backgroundImageUrl ? "" : ` ${styles.leftPanelPlain}`}`}>
             <div className={styles.monthHeader}>
               <button
                 type="button"
