@@ -70,13 +70,30 @@ function accentFromBitmap(bitmap: ImageBitmap): string | null {
     if (!acc || cur.w > acc.w) return cur;
     return acc;
   }, null);
-  if (!best || best.w <= 0) return null;
-  return toDisplayAccent(best.r / best.w, best.g / best.w, best.b / best.w);
+  if (best && best.w > 0) return toDisplayAccent(best.r / best.w, best.g / best.w, best.b / best.w);
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let w = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 200) continue;
+    r += data[i];
+    g += data[i + 1];
+    b += data[i + 2];
+    w += 1;
+  }
+  if (w <= 0) return null;
+  return toDisplayAccent(r / w, g / w, b / w);
 }
 
-export async function extractAlbumAccentColor(imageUrl: string): Promise<string | null> {
-  const cached = accentCache.get(imageUrl);
-  if (cached) return cached;
+const accentInflight = new Map<string, Promise<string | null>>();
+
+export function peekAlbumAccentColor(imageUrl: string): string | null {
+  return accentCache.get(imageUrl) ?? null;
+}
+
+async function loadAlbumAccentColor(imageUrl: string): Promise<string | null> {
   const res = await fetch(`/api/album-image?url=${encodeURIComponent(imageUrl)}`);
   if (!res.ok) return null;
   const blob = await res.blob();
@@ -84,6 +101,22 @@ export async function extractAlbumAccentColor(imageUrl: string): Promise<string 
   const bitmap = await createImageBitmap(blob);
   const accent = accentFromBitmap(bitmap);
   bitmap.close();
-  if (accent) accentCache.set(imageUrl, accent);
   return accent;
+}
+
+export async function extractAlbumAccentColor(imageUrl: string): Promise<string | null> {
+  const cached = accentCache.get(imageUrl);
+  if (cached) return cached;
+  const existing = accentInflight.get(imageUrl);
+  if (existing) return existing;
+  const job = loadAlbumAccentColor(imageUrl)
+    .then((accent) => {
+      if (accent) accentCache.set(imageUrl, accent);
+      return accent;
+    })
+    .finally(() => {
+      accentInflight.delete(imageUrl);
+    });
+  accentInflight.set(imageUrl, job);
+  return job;
 }

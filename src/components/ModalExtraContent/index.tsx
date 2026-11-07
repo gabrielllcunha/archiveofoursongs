@@ -6,7 +6,7 @@ import { Album } from "@/models";
 import { secretPagesStorage, type SecretPageRecord } from "@/services/secretPagesStorage";
 import { yearlyDataStorage } from "@/services/yearlyDataStorage";
 import { formatSecondsAsMmSs, parseTimeToSeconds } from "@/utils/audioStartTime";
-import { extractAlbumAccentColor } from "@/utils/albumAccentColor";
+import { extractAlbumAccentColor, peekAlbumAccentColor } from "@/utils/albumAccentColor";
 import {
   encodeSpotifySoundtrackPath,
   encodeYoutubeSoundtrackPath,
@@ -420,8 +420,14 @@ export function ModalExtraContent({
   const debounceRef = useRef<number | null>(null);
   const startTimeDebounceRef = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+  const setAudioNode = useCallback((node: HTMLAudioElement | null) => {
+    audioRef.current = node;
+    setAudioElement((current) => (current === node ? current : node));
+  }, []);
   const keyboardFocusAnchorRef = useRef<HTMLDivElement | null>(null);
   const viewRevisionRef = useRef(0);
+  const islandAccentRequestRef = useRef(0);
   const appliedPageSignatureRef = useRef("");
   const decryptFailedRef = useRef(false);
   const contentLoadedKeyRef = useRef<string | null>(null);
@@ -594,14 +600,16 @@ export function ModalExtraContent({
     setEditing(false);
     setUploadError(null);
     setSoundtrackPlaying(false);
-    setIslandAccent(null);
+    islandAccentRequestRef.current += 1;
     if (cached) {
       applyLoadedSecretPage(cached, viewRevisionRef.current);
       const peekedUrl = secretPagesStorage.peekAudioPlaybackUrl(modalYear, selectedMonth, cached);
+      setIslandAccent(cached.album_cover_url ? peekAlbumAccentColor(cached.album_cover_url) : null);
       setAudioSrc(peekedUrl);
       setImageLoading(false);
       return;
     }
+    setIslandAccent(null);
     decryptFailedRef.current = false;
     contentLoadedKeyRef.current = null;
     loadedRevisionRef.current = null;
@@ -670,10 +678,9 @@ export function ModalExtraContent({
   }, [open, modalYear, selectedMonth, audioReloadNonce, showToast, applyLoadedSecretPage]);
 
   useEffect(() => {
-    const el = audioRef.current;
-    const loadingVisuals = loadingContent || imageLoading;
-    if (!open || !el || !audioSrc || loadingVisuals || audioUi.source !== "file") {
-      if (el && (!open || !audioSrc || loadingVisuals)) {
+    const el = audioElement;
+    if (!open || !el || !audioSrc || loadingContent || audioUi.source !== "file") {
+      if (el && (!open || !audioSrc || loadingContent)) {
         el.pause();
         if (!open) {
           el.removeAttribute("src");
@@ -684,12 +691,19 @@ export function ModalExtraContent({
     }
 
     const startSec = Math.max(0, audioUi.startSeconds);
+    let stopped = false;
 
     const beginPlayback = () => {
+      if (stopped) return;
       if (startSec > 0 && Number.isFinite(el.duration) && el.duration > 0) {
         el.currentTime = Math.min(startSec, Math.max(0, el.duration - 0.05));
       }
-      void el.play().catch(() => { });
+      void el.play().catch(() => {
+        if (stopped) return;
+        el.addEventListener("canplay", () => {
+          if (!stopped) void el.play().catch(() => undefined);
+        }, { once: true });
+      });
     };
 
     const onEnded = () => {
@@ -713,6 +727,7 @@ export function ModalExtraContent({
     el.addEventListener("ended", syncPlaying);
 
     return () => {
+      stopped = true;
       el.removeEventListener("ended", onEnded);
       el.removeEventListener("loadedmetadata", beginPlayback);
       el.removeEventListener("playing", syncPlaying);
@@ -721,7 +736,7 @@ export function ModalExtraContent({
       el.pause();
       setSoundtrackPlaying(false);
     };
-  }, [open, audioSrc, audioUi.startSeconds, audioUi.source, dialogPlaybackNonce, loadingContent, imageLoading, advanceAfterSoundtrack]);
+  }, [audioElement, open, audioSrc, audioUi.startSeconds, audioUi.source, dialogPlaybackNonce, loadingContent, advanceAfterSoundtrack]);
 
   useLayoutEffect(() => {
     if (!backgroundImageUrl) {
@@ -738,18 +753,25 @@ export function ModalExtraContent({
       setIslandAccent(null);
       return;
     }
+    const imageUrl = backgroundImageUrl;
+    const cachedAccent = peekAlbumAccentColor(imageUrl);
+    if (cachedAccent) {
+      setIslandAccent(cachedAccent);
+      return;
+    }
+    const requestId = ++islandAccentRequestRef.current;
     let cancelled = false;
-    void extractAlbumAccentColor(backgroundImageUrl)
+    void extractAlbumAccentColor(imageUrl)
       .then((accent) => {
-        if (!cancelled) setIslandAccent(accent);
+        if (cancelled || requestId !== islandAccentRequestRef.current || !accent) return;
+        setIslandAccent(accent);
       })
-      .catch(() => {
-        if (!cancelled) setIslandAccent(null);
-      });
+      .catch(() => undefined);
     return () => {
       cancelled = true;
+      islandAccentRequestRef.current += 1;
     };
-  }, [audioUi.hasTrack, backgroundImageUrl]);
+  }, [audioUi.hasTrack, backgroundImageUrl, modalYear, selectedMonth]);
 
   useEffect(() => {
     if (!editing || !textareaRef.current) return;
@@ -980,232 +1002,232 @@ export function ModalExtraContent({
 
   return (
     <>
-    <Dialog
-      open={open}
-      showCloseButton={false}
-      contentClassName={styles.dialogContainer}
-      onOpenAutoFocus={(event) => {
-        event.preventDefault();
-        focusKeyboardAnchor();
-      }}
-      blockDismiss={chooserOpen}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen && chooserOpen) return;
-        if (nextOpen && pendingMonthIndex === null) {
-          setView({ year, monthIndex: 0 });
+      <Dialog
+        open={open}
+        showCloseButton={false}
+        contentClassName={styles.dialogContainer}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          focusKeyboardAnchor();
+        }}
+        blockDismiss={chooserOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && chooserOpen) return;
+          if (nextOpen && pendingMonthIndex === null) {
+            setView({ year, monthIndex: 0 });
+          }
+          onOpenChange(nextOpen);
+        }}
+        trigger={
+          <div className={`${styles.secretIcon}${!open ? ` ${styles.secretIconMobileFixed}` : ` ${styles.secretIconMobileHidden}`}`}>
+            <ArchiveIcon className={styles.archiveIconGlyph} />
+          </div>
         }
-        onOpenChange(nextOpen);
-      }}
-      trigger={
-        <div className={`${styles.secretIcon}${!open ? ` ${styles.secretIconMobileFixed}` : ` ${styles.secretIconMobileHidden}`}`}>
-          <ArchiveIcon className={styles.archiveIconGlyph} />
-        </div>
-      }
-    >
-      <div
-        ref={keyboardFocusAnchorRef}
-        tabIndex={-1}
-        className={styles.keyboardFocusAnchor}
-        aria-hidden
-      />
-      <audio ref={audioRef} className={styles.hiddenAudio} playsInline preload="auto" />
-      <ExternalSoundtrackPlayer
-        source={audioUi.source === "youtube" || audioUi.source === "spotify" ? audioUi.source : null}
-        externalId={audioUi.externalId}
-        active={open && !loadingContent && !imageLoading}
-        startSeconds={audioUi.startSeconds}
-        onPlayingChange={setSoundtrackPlaying}
-        onEnded={advanceAfterSoundtrack}
-      />
-      <div ref={surfaceRef} className={styles.dialogContent}>
-        <button
-          type="button"
-          className={styles.mobileCloseButton}
-          onClick={(event) => {
-            if (shouldIgnoreDialogDismiss()) {
-              event.preventDefault();
-              event.stopPropagation();
-              return;
-            }
-            onOpenChange(false);
-          }}
-          aria-label="Close"
-        >
-          <Cross2Icon width={18} height={18} />
-        </button>
-        <div ref={layerRef} className={styles.swipeLayer}>
-        {backgroundImageUrl ? (
-          <Image
-            key={`${modalYear}-${selectedMonth}-${backgroundImageUrl}`}
-            className={`${styles.albumBackgroundImage} ${imageLoading ? styles.albumImageLoading : ""}`}
-            src={backgroundImageUrl}
-            alt={selectedAlbum?.name || selectedMonth}
-            fill
-            draggable={false}
-            sizes="(max-width: 1024px) 100vw, 86vh"
-            unoptimized
-            onLoad={() => setImageLoading(false)}
-            onError={() => setImageLoading(false)}
-          />
-        ) : (
-          <div className={styles.imagePlaceholder} aria-label="No album cover for this month">
-            <ImageIcon className={styles.placeholderIcon} aria-hidden />
-          </div>
-        )}
-
-        {imageLoading && backgroundImageUrl && (
-          <div className={styles.imageLoadingOverlay}>
-            <Spinner size="large" loading={imageLoading} />
-          </div>
-        )}
-
-        <div className={styles.foregroundContent}>
-          <div className={`${styles.leftPanel}${backgroundImageUrl ? "" : ` ${styles.leftPanelPlain}`}`}>
-            <div className={styles.monthHeader}>
-              <button
-                type="button"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={goPrevMonth}
-                className={`${styles.monthArrow} ${styles.monthArrowLeft}`}
-                aria-label="Previous month"
-                disabled={prevDisabled}
-              >
-                <ChevronLeftIcon />
-              </button>
-              <span className={styles.monthTitle}>{selectedMonth}</span>
-              <button
-                type="button"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={goNextMonth}
-                className={`${styles.monthArrow} ${styles.monthArrowRight}`}
-                aria-label="Next month"
-                disabled={nextDisabled}
-              >
-                <ChevronRightIcon />
-              </button>
-              <span className={styles.monthYear}>{modalYear}</span>
-            </div>
-            <div className={styles.mediaRow}>
-              {audioUi.hasTrack ? (
-                <div className={styles.soundtrackPlayer}>
-                  <div
-                    className={`${styles.soundtrackIsland}${soundtrackPlaying ? ` ${styles.soundtrackIslandLive}` : ""}${islandAccent ? "" : ` ${styles.soundtrackIslandPending}`}`}
-                    style={{ "--island-accent": islandAccent ?? "255, 255, 255" } as CSSProperties}
-                  >
-                    <div className={`${styles.islandArt}${soundtrackPlaying ? ` ${styles.islandArtLive}` : ""}`}>
-                      {backgroundImageUrl ? (
-                        <Image
-                          src={backgroundImageUrl}
-                          alt=""
-                          fill
-                          sizes="36px"
-                          unoptimized
-                          className={styles.islandArtImage}
-                        />
-                      ) : (
-                        <HiOutlineMusicNote className={styles.islandArtFallback} aria-hidden />
-                      )}
-                    </div>
-                    <span className={styles.islandTitle} title={displayAudioName}>
-                      {truncateFilename(displayAudioName, 36)}
-                    </span>
-                    <div className={`${styles.islandWave}${soundtrackPlaying ? ` ${styles.islandWaveLive}` : ""}`} aria-hidden>
-                      <i /><i /><i /><i /><i />
-                    </div>
-                    <button
-                      type="button"
-                      className={styles.soundtrackRemove}
-                      aria-label="Remove soundtrack"
-                      disabled={removeBusy || uploadBusy}
-                      onClick={() => void handleRemoveAudio()}
-                    >
-                      <Cross2Icon width={16} height={16} />
-                    </button>
-                  </div>
-                  <div className={styles.startTimeBridge} aria-hidden />
-                  <div className={styles.startTimeTooltip} role="tooltip">
-                    <label className={styles.startTimeLabel} htmlFor="secret-audio-start">
-                      First play starts at
-                    </label>
-                    <input
-                      id="secret-audio-start"
-                      type="text"
-                      className={styles.startTimeInput}
-                      value={startTimeDraft}
-                      onChange={(e) => handleStartTimeChange(e.target.value)}
-                      onBlur={() => flushStartTime()}
-                      placeholder="m:ss"
-                      inputMode="numeric"
-                      autoComplete="off"
-                    />
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className={styles.mediaButton}
-                  disabled={uploadBusy}
-                  onClick={() => setChooserOpen(true)}
-                >
-                  {uploadBusy ? (
-                    "Saving…"
-                  ) : (
-                    <>
-                      <HiOutlineMusicNote className={styles.mediaButtonIcon} aria-hidden />
-                      Add Soundtrack
-                    </>
-                  )}
-                </button>
-              )}
-              {uploadError && (
-                <span className={styles.uploadHint} role="status">
-                  {uploadError}
-                </span>
-              )}
-            </div>
-            {loadingContent ? (
-              <Skeleton className={styles.diarySkeleton} />
-            ) : editing ? (
-              <textarea
-                ref={textareaRef}
-                className={styles.diaryInput}
-                value={content}
-                onChange={(event) => handleChange(event.target.value)}
-                onBlur={handleBlur}
-                placeholder="What did things in this month sound like?"
+      >
+        <div
+          ref={keyboardFocusAnchorRef}
+          tabIndex={-1}
+          className={styles.keyboardFocusAnchor}
+          aria-hidden
+        />
+        <audio ref={setAudioNode} className={styles.hiddenAudio} playsInline preload="auto" />
+        <ExternalSoundtrackPlayer
+          source={audioUi.source === "youtube" || audioUi.source === "spotify" ? audioUi.source : null}
+          externalId={audioUi.externalId}
+          active={open && !loadingContent}
+          startSeconds={audioUi.startSeconds}
+          onPlayingChange={setSoundtrackPlaying}
+          onEnded={advanceAfterSoundtrack}
+        />
+        <div ref={surfaceRef} className={styles.dialogContent}>
+          <button
+            type="button"
+            className={styles.mobileCloseButton}
+            onClick={(event) => {
+              if (shouldIgnoreDialogDismiss()) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
+              onOpenChange(false);
+            }}
+            aria-label="Close"
+          >
+            <Cross2Icon width={18} height={18} />
+          </button>
+          <div ref={layerRef} className={styles.swipeLayer}>
+            {backgroundImageUrl ? (
+              <Image
+                key={`${modalYear}-${selectedMonth}-${backgroundImageUrl}`}
+                className={`${styles.albumBackgroundImage} ${imageLoading ? styles.albumImageLoading : ""}`}
+                src={backgroundImageUrl}
+                alt={selectedAlbum?.name || selectedMonth}
+                fill
+                draggable={false}
+                sizes="(max-width: 1024px) 100vw, 86vh"
+                unoptimized
+                onLoad={() => setImageLoading(false)}
+                onError={() => setImageLoading(false)}
               />
             ) : (
-              <div
-                className={
-                  `${styles.diaryText}${!content ? ` ${styles.diaryTextPlaceholder}` : ""}`
-                }
-                onClick={() => setEditing(true)}
-              >
-                {content
-                  ? (
-                    <InlineMarkdown
-                      text={content}
-                      paragraphClassName={styles.markdownParagraph}
-                      blockquoteClassName={styles.diaryBlockquote}
-                    />
-                  )
-                  : "What did things in this month sound like?"}
+              <div className={styles.imagePlaceholder} aria-label="No album cover for this month">
+                <ImageIcon className={styles.placeholderIcon} aria-hidden />
               </div>
             )}
+
+            {imageLoading && backgroundImageUrl && (
+              <div className={styles.imageLoadingOverlay}>
+                <Spinner size="large" loading={imageLoading} />
+              </div>
+            )}
+
+            <div className={styles.foregroundContent}>
+              <div className={`${styles.leftPanel}${backgroundImageUrl ? "" : ` ${styles.leftPanelPlain}`}`}>
+                <div className={styles.monthHeader}>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={goPrevMonth}
+                    className={`${styles.monthArrow} ${styles.monthArrowLeft}`}
+                    aria-label="Previous month"
+                    disabled={prevDisabled}
+                  >
+                    <ChevronLeftIcon />
+                  </button>
+                  <span className={styles.monthTitle}>{selectedMonth}</span>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={goNextMonth}
+                    className={`${styles.monthArrow} ${styles.monthArrowRight}`}
+                    aria-label="Next month"
+                    disabled={nextDisabled}
+                  >
+                    <ChevronRightIcon />
+                  </button>
+                  <span className={styles.monthYear}>{modalYear}</span>
+                </div>
+                <div className={styles.mediaRow}>
+                  {audioUi.hasTrack ? (
+                    <div className={styles.soundtrackPlayer}>
+                      <div
+                        className={`${styles.soundtrackIsland}${soundtrackPlaying ? ` ${styles.soundtrackIslandLive}` : ""}${islandAccent ? "" : ` ${styles.soundtrackIslandPending}`}`}
+                        style={{ "--island-accent": islandAccent ?? "255, 255, 255" } as CSSProperties}
+                      >
+                        <div className={`${styles.islandArt}${soundtrackPlaying ? ` ${styles.islandArtLive}` : ""}`}>
+                          {backgroundImageUrl ? (
+                            <Image
+                              src={backgroundImageUrl}
+                              alt=""
+                              fill
+                              sizes="36px"
+                              unoptimized
+                              className={styles.islandArtImage}
+                            />
+                          ) : (
+                            <HiOutlineMusicNote className={styles.islandArtFallback} aria-hidden />
+                          )}
+                        </div>
+                        <span className={styles.islandTitle} title={displayAudioName}>
+                          {truncateFilename(displayAudioName, 36)}
+                        </span>
+                        <div className={`${styles.islandWave}${soundtrackPlaying ? ` ${styles.islandWaveLive}` : ""}`} aria-hidden>
+                          <i /><i /><i /><i /><i />
+                        </div>
+                        <button
+                          type="button"
+                          className={styles.soundtrackRemove}
+                          aria-label="Remove soundtrack"
+                          disabled={removeBusy || uploadBusy}
+                          onClick={() => void handleRemoveAudio()}
+                        >
+                          <Cross2Icon width={16} height={16} />
+                        </button>
+                      </div>
+                      <div className={styles.startTimeBridge} aria-hidden />
+                      <div className={styles.startTimeTooltip} role="tooltip">
+                        <label className={styles.startTimeLabel} htmlFor="secret-audio-start">
+                          First play starts at
+                        </label>
+                        <input
+                          id="secret-audio-start"
+                          type="text"
+                          className={styles.startTimeInput}
+                          value={startTimeDraft}
+                          onChange={(e) => handleStartTimeChange(e.target.value)}
+                          onBlur={() => flushStartTime()}
+                          placeholder="m:ss"
+                          inputMode="numeric"
+                          autoComplete="off"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className={styles.mediaButton}
+                      disabled={uploadBusy}
+                      onClick={() => setChooserOpen(true)}
+                    >
+                      {uploadBusy ? (
+                        "Saving…"
+                      ) : (
+                        <>
+                          <HiOutlineMusicNote className={styles.mediaButtonIcon} aria-hidden />
+                          Add Soundtrack
+                        </>
+                      )}
+                    </button>
+                  )}
+                  {uploadError && (
+                    <span className={styles.uploadHint} role="status">
+                      {uploadError}
+                    </span>
+                  )}
+                </div>
+                {loadingContent ? (
+                  <Skeleton className={styles.diarySkeleton} />
+                ) : editing ? (
+                  <textarea
+                    ref={textareaRef}
+                    className={styles.diaryInput}
+                    value={content}
+                    onChange={(event) => handleChange(event.target.value)}
+                    onBlur={handleBlur}
+                    placeholder="What did things in this month sound like?"
+                  />
+                ) : (
+                  <div
+                    className={
+                      `${styles.diaryText}${!content ? ` ${styles.diaryTextPlaceholder}` : ""}`
+                    }
+                    onClick={() => setEditing(true)}
+                  >
+                    {content
+                      ? (
+                        <InlineMarkdown
+                          text={content}
+                          paragraphClassName={styles.markdownParagraph}
+                          blockquoteClassName={styles.diaryBlockquote}
+                        />
+                      )
+                      : "What did things in this month sound like?"}
+                  </div>
+                )}
+              </div>
+              <div className={styles.rightSpacer} />
+            </div>
           </div>
-          <div className={styles.rightSpacer} />
         </div>
-        </div>
-      </div>
-    </Dialog>
-    <SoundtrackChooser
-      open={chooserOpen}
-      busy={uploadBusy}
-      onOpenChange={setChooserOpen}
-      onAttachMp3={attachMp3File}
-      onAttachYoutube={attachYoutubeSoundtrack}
-      onAttachSpotify={attachSpotifySoundtrack}
-    />
+      </Dialog>
+      <SoundtrackChooser
+        open={chooserOpen}
+        busy={uploadBusy}
+        onOpenChange={setChooserOpen}
+        onAttachMp3={attachMp3File}
+        onAttachYoutube={attachYoutubeSoundtrack}
+        onAttachSpotify={attachSpotifySoundtrack}
+      />
     </>
   );
 }

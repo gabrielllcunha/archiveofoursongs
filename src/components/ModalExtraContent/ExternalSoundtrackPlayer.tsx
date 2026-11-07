@@ -29,45 +29,58 @@ declare global {
   }
 }
 
+function whenSdkReady(ready: () => boolean, waitMs = 8000): Promise<void> {
+  if (ready()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      if (ready()) {
+        window.clearInterval(timer);
+        resolve();
+      } else if (Date.now() - started > waitMs) {
+        window.clearInterval(timer);
+        reject(new Error("Playback SDK timed out"));
+      }
+    }, 50);
+  });
+}
+
 function loadYoutubeApi() {
   if (window.YT?.Player) return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    const previous = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => {
-      previous?.();
-      resolve();
-    };
-    if (!document.getElementById("yt-iframe-api")) {
-      const tag = document.createElement("script");
-      tag.id = "yt-iframe-api";
-      tag.src = "https://www.youtube.com/iframe_api";
-      document.head.appendChild(tag);
-    }
-    if (window.YT?.Player) resolve();
-  });
+  if (!document.getElementById("yt-iframe-api")) {
+    const tag = document.createElement("script");
+    tag.id = "yt-iframe-api";
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(tag);
+  }
+  const previous = window.onYouTubeIframeAPIReady;
+  window.onYouTubeIframeAPIReady = () => {
+    previous?.();
+  };
+  return whenSdkReady(() => Boolean(window.YT?.Player));
 }
 
 let spotifySdkLoading: Promise<void> | null = null;
 
 function loadSpotifyPlaybackSdk() {
   if (window.Spotify?.Player) return Promise.resolve();
-  if (spotifySdkLoading) return spotifySdkLoading;
-  spotifySdkLoading = new Promise<void>((resolve, reject) => {
+  if (!spotifySdkLoading) {
+    spotifySdkLoading = whenSdkReady(() => Boolean(window.Spotify?.Player)).catch((error) => {
+      spotifySdkLoading = null;
+      throw error;
+    });
     const previous = window.onSpotifyWebPlaybackSDKReady;
     window.onSpotifyWebPlaybackSDKReady = () => {
       previous?.();
-      resolve();
     };
     if (!document.getElementById("spotify-player-sdk")) {
       const tag = document.createElement("script");
       tag.id = "spotify-player-sdk";
       tag.src = "https://sdk.scdn.co/spotify-player.js";
       tag.async = true;
-      tag.onerror = () => reject(new Error("Could not load Spotify playback"));
       document.body.appendChild(tag);
     }
-    if (window.Spotify?.Player) resolve();
-  });
+  }
   return spotifySdkLoading;
 }
 
@@ -102,6 +115,7 @@ async function ensureSpotifyPlayer(): Promise<string | null> {
   if (!SpotifyPlayer) return null;
   if (spotifyDeviceId && spotifyPlayer) return spotifyDeviceId;
   if (spotifyReady) return spotifyReady;
+  if (spotifyPlayer) resetSpotifyPlayer();
 
   spotifyReady = new Promise((resolve) => {
     const player = new SpotifyPlayer({
@@ -325,7 +339,7 @@ export function ExternalSoundtrackPlayer({ source, externalId, active, startSeco
       }
     };
 
-    void mount();
+    void mount().catch(() => undefined);
 
     return () => {
       cancelled = true;
